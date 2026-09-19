@@ -1,0 +1,6 @@
+{
+  "name": "Terang yang Tak Minta Disebut - Novel Reader",
+  "description": "Aplikasi pembaca novel modern dan minimalis untuk kisah Kinan & Garaga dengan 30 episode lengkap, pengaturan tipografi pembaca, proteksi teks, dan tombol salin langsung format Wattpad.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
