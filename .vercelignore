@@ -1,0 +1,4 @@
+backend/
+novel/
+.emergent/
+pytest.ini
