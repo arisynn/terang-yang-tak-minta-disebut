@@ -1,199 +1,192 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Toaster, toast } from 'sonner';
-import { NOVEL_DATA } from './data/novelData';
-import Navbar from './components/Navbar';
-import NovelHero from './components/NovelHero';
-import EpisodeReader from './components/EpisodeReader';
-import TableOfContentsModal from './components/TableOfContentsModal';
-import ReaderSettingsModal from './components/ReaderSettingsModal';
+import React, { useState, useEffect, useCallback } from "react";
+import { EPISODES } from "./data/episodes";
+import { useReaderSettings } from "./hooks/useReaderSettings";
+import { useMarkdownEpisode } from "./hooks/useMarkdownEpisode";
+import { useReadingProgress } from "./hooks/useReadingProgress";
+import { Header } from "./components/Header";
+import { Reader } from "./components/Reader";
+import { ReadingProgressBar } from "./components/ReadingProgressBar";
+import { EpisodeDrawer } from "./components/EpisodeDrawer";
+import { SettingsModal } from "./components/SettingsModal";
 
-const DEFAULT_SETTINGS = {
-  theme: 'paper',
-  fontFamily: 'serif',
-  fontSize: 18,
-  lineHeight: '1.85',
-  maxWidth: 'max-w-2xl'
-};
+function getInitialEpisode() {
+  // 1. Check URL hash first (e.g. #episode-03 or #3)
+  if (typeof window !== "undefined" && window.location.hash) {
+    const hash = window.location.hash.replace("#", "").toLowerCase();
+    const match = EPISODES.find(
+      (ep) =>
+        ep.slug.toLowerCase() === hash ||
+        String(ep.number) === hash ||
+        ep.slug.toLowerCase() === `episode-${hash.padStart(2, "0")}`
+    );
+    if (match) return match;
+  }
+
+  // 2. Check localStorage for last read active episode
+  try {
+    const stored = localStorage.getItem("novel_reader_progress_history_v1");
+    if (stored) {
+      const history = JSON.parse(stored);
+      if (history.lastActiveEpisodeId) {
+        const found = EPISODES.find((ep) => ep.id === history.lastActiveEpisodeId);
+        if (found) return found;
+      }
+    }
+  } catch (e) {
+    console.warn("Could not read last active episode", e);
+  }
+
+  // 3. Default to first episode
+  return EPISODES[0];
+}
 
 export default function App() {
-  const [activeEpisodeId, setActiveEpisodeId] = useState(() => {
-    return localStorage.getItem('novel_active_ep') || null;
-  });
-
-  const [isReaderMode, setIsReaderMode] = useState(() => {
-    return !!localStorage.getItem('novel_active_ep');
-  });
-
-  const [readerSettings, setReaderSettings] = useState(() => {
-    try {
-      const saved = localStorage.getItem('novel_reader_settings');
-      return saved ? { ...DEFAULT_SETTINGS, ...JSON.parse(saved) } : DEFAULT_SETTINGS;
-    } catch {
-      return DEFAULT_SETTINGS;
-    }
-  });
-
-  const [readEpisodes, setReadEpisodes] = useState(() => {
-    try {
-      const saved = localStorage.getItem('novel_read_episodes');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
-
-  // Modal states (Only TOC & Settings)
-  const [isTocOpen, setIsTocOpen] = useState(false);
+  const [currentEpisode, setCurrentEpisode] = useState(getInitialEpisode);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [copiedEpisodeId, setCopiedEpisodeId] = useState(null);
 
-  // Sync settings to document class
+  const { settings, updateSetting, resetSettings } = useReaderSettings();
+  const { progress, isScrolled, scrollToTop } = useReadingProgress(currentEpisode.id);
+  const { html, loading, error, retry } = useMarkdownEpisode(currentEpisode);
+
+  const currentIndex = EPISODES.findIndex((ep) => ep.id === currentEpisode.id);
+  const hasPrev = currentIndex > 0;
+  const hasNext = currentIndex < EPISODES.length - 1;
+
+  // Change episode handler
+  const handleSelectEpisode = useCallback(
+    (episodeId) => {
+      const selected = EPISODES.find((ep) => ep.id === episodeId);
+      if (selected) {
+        setCurrentEpisode(selected);
+        window.location.hash = selected.slug;
+        scrollToTop(false);
+      }
+    },
+    [scrollToTop]
+  );
+
+  const handlePrevEpisode = useCallback(() => {
+    if (hasPrev) {
+      handleSelectEpisode(EPISODES[currentIndex - 1].id);
+    }
+  }, [hasPrev, currentIndex, handleSelectEpisode]);
+
+  const handleNextEpisode = useCallback(() => {
+    if (hasNext) {
+      handleSelectEpisode(EPISODES[currentIndex + 1].id);
+    }
+  }, [hasNext, currentIndex, handleSelectEpisode]);
+
+  // Cycle through themes: light -> sepia -> dark -> light
+  const handleToggleTheme = useCallback(() => {
+    const themes = ["light", "sepia", "dark"];
+    const currentTheme = settings.theme || "light";
+    const nextIndex = (themes.indexOf(currentTheme) + 1) % themes.length;
+    updateSetting("theme", themes[nextIndex]);
+  }, [settings.theme, updateSetting]);
+
+  // Listen for hashchange in browser (e.g. back/forward buttons)
   useEffect(() => {
-    localStorage.setItem('novel_reader_settings', JSON.stringify(readerSettings));
-    const root = document.documentElement;
-    root.classList.remove('theme-paper', 'theme-sepia', 'theme-matcha', 'theme-night', 'theme-oat', 'theme-blush', 'theme-dusk', 'dark');
-    root.classList.add(`theme-${readerSettings.theme}`);
-    if (readerSettings.theme === 'night') {
-      root.classList.add('dark');
-    }
-  }, [readerSettings]);
+    const handleHashChange = () => {
+      const hash = window.location.hash.replace("#", "").toLowerCase();
+      if (!hash) return;
+      const match = EPISODES.find(
+        (ep) =>
+          ep.slug.toLowerCase() === hash ||
+          String(ep.number) === hash ||
+          ep.slug.toLowerCase() === `episode-${hash.padStart(2, "0")}`
+      );
+      if (match && match.id !== currentEpisode.id) {
+        setCurrentEpisode(match);
+        scrollToTop(false);
+      }
+    };
 
-  // Sync read episodes
+    window.addEventListener("hashchange", handleHashChange);
+    return () => window.removeEventListener("hashchange", handleHashChange);
+  }, [currentEpisode.id, scrollToTop]);
+
+  // Keyboard navigation shortcuts
   useEffect(() => {
-    localStorage.setItem('novel_read_episodes', JSON.stringify(readEpisodes));
-  }, [readEpisodes]);
+    const handleKeyDown = (e) => {
+      // Don't trigger shortcuts if user is in an input or textarea
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(e.target.tagName)) return;
 
-  const currentEpisode =
-    NOVEL_DATA.episodes.find((ep) => ep.id === activeEpisodeId) || NOVEL_DATA.episodes[0];
+      if (e.key === "ArrowLeft" && !e.altKey && !e.metaKey) {
+        if (!isDrawerOpen && !isSettingsOpen) {
+          handlePrevEpisode();
+        }
+      } else if (e.key === "ArrowRight" && !e.altKey && !e.metaKey) {
+        if (!isDrawerOpen && !isSettingsOpen) {
+          handleNextEpisode();
+        }
+      } else if ((e.key === "t" || e.key === "T") && !e.ctrlKey && !e.metaKey) {
+        if (!isDrawerOpen && !isSettingsOpen) {
+          handleToggleTheme();
+        }
+      }
+    };
 
-  const handleSelectEpisode = (epId) => {
-    setActiveEpisodeId(epId);
-    setIsReaderMode(true);
-    localStorage.setItem('novel_active_ep', epId);
-
-    if (!readEpisodes.includes(epId)) {
-      setReadEpisodes((prev) => [...prev, epId]);
-    }
-  };
-
-  const handleBackToOverview = () => {
-    setIsReaderMode(false);
-  };
-
-  const handleUpdateSettings = (newSettings) => {
-    setReaderSettings((prev) => ({ ...prev, ...newSettings }));
-  };
-
-  // Single dedicated handler for copying for Wattpad
-  const handleQuickCopyWattpad = useCallback(async (ep) => {
-    if (!ep) return;
-    try {
-      const formattedText = `${ep.title}\n\n${ep.paragraphs.join('\n\n')}`;
-      await navigator.clipboard.writeText(formattedText);
-      setCopiedEpisodeId(ep.id);
-
-      toast.success(`Bab ${ep.number} Berhasil Disalin!`, {
-        description: `Teks (${ep.wordCount.toLocaleString()} kata) siap langsung di-paste ke Wattpad.`,
-        duration: 3000,
-        position: 'top-center'
-      });
-
-      setTimeout(() => {
-        setCopiedEpisodeId(null);
-      }, 2500);
-    } catch (err) {
-      console.error('Failed to copy', err);
-      toast.error('Gagal menyalin teks');
-    }
-  }, []);
-
-  // Protected copy notice when user tries manual text copy/selection
-  const handleTriggerCopyProtectedNotice = useCallback(() => {
-    toast.info('Gunakan Tombol "Salin untuk Wattpad"', {
-      description:
-        'Seleksi manual dinonaktifkan. Gunakan tombol di pojok kanan atas untuk menyalin isi bab secara rapi.',
-      duration: 3000,
-      position: 'top-center'
-    });
-  }, []);
-
-  const getThemeClass = () => {
-    switch (readerSettings.theme) {
-      case 'sepia':
-        return 'bg-[#f6f0e6] text-[#1c1917]';
-      case 'matcha':
-        return 'bg-[#f1f6f2] text-[#111d14]';
-      case 'night':
-        return 'bg-[#121316] text-[#f4f4f5]';
-      case 'paper':
-      default:
-        return 'bg-[#fcfbf8] text-[#111827]';
-    }
-  };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [
+    isDrawerOpen,
+    isSettingsOpen,
+    handlePrevEpisode,
+    handleNextEpisode,
+    handleToggleTheme,
+  ]);
 
   return (
-    <div className={`min-h-screen flex flex-col font-sans transition-colors duration-200 ${getThemeClass()}`}>
-      <Toaster richColors position="top-center" />
+    <div className="relative min-h-screen flex flex-col selection:bg-amber-500/20">
+      {/* 1. Thin top progress bar */}
+      <ReadingProgressBar progress={progress} theme={settings.theme} />
 
-      {/* Single Clean Top Navbar */}
-      <Navbar
-        novelTitle={NOVEL_DATA.title}
+      {/* 2. Header (Minimal Top + Floating Capsule on Scroll) */}
+      <Header
         currentEpisode={currentEpisode}
-        onOpenToc={() => setIsTocOpen(true)}
+        progress={progress}
+        isScrolled={isScrolled}
+        onOpenDrawer={() => setIsDrawerOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onQuickCopyWattpad={handleQuickCopyWattpad}
-        isReaderMode={isReaderMode}
-        onBackToOverview={handleBackToOverview}
-        theme={readerSettings.theme}
-        copiedEpisodeId={copiedEpisodeId}
+        theme={settings.theme}
+        onToggleTheme={handleToggleTheme}
+        onPrevEpisode={handlePrevEpisode}
+        onNextEpisode={handleNextEpisode}
+        hasPrev={hasPrev}
+        hasNext={hasNext}
       />
 
-      {/* Main View Area */}
-      <div className="flex-1 w-full">
-        {isReaderMode && currentEpisode ? (
-          <EpisodeReader
-            episode={currentEpisode}
-            novelData={NOVEL_DATA}
-            onNavigateEpisode={handleSelectEpisode}
-            onTriggerCopyProtectedNotice={handleTriggerCopyProtectedNotice}
-            readerSettings={readerSettings}
-            theme={readerSettings.theme}
-          />
-        ) : (
-          <NovelHero
-            novelData={NOVEL_DATA}
-            onSelectEpisode={handleSelectEpisode}
-            readEpisodes={readEpisodes}
-            lastReadEpisodeId={activeEpisodeId}
-            theme={readerSettings.theme}
-          />
-        )}
-      </div>
-
-      {/* Minimal Footer */}
-      <footer className="w-full border-t border-inherit/15 py-6 px-4 text-center text-xs opacity-50 space-y-1">
-        <p className="font-serif">{NOVEL_DATA.title}</p>
-        <p>30 Bab Lengkap • Kisah Kinanthi & Garaga</p>
-      </footer>
-
-      {/* Table of Contents Modal */}
-      <TableOfContentsModal
-        isOpen={isTocOpen}
-        onClose={() => setIsTocOpen(false)}
-        episodes={NOVEL_DATA.episodes}
-        currentEpisodeId={activeEpisodeId}
+      {/* 3. Main Novel Reader Viewport */}
+      <Reader
+        episode={currentEpisode}
+        html={html}
+        loading={loading}
+        error={error}
+        onRetry={retry}
+        settings={settings}
         onSelectEpisode={handleSelectEpisode}
-        readEpisodes={readEpisodes}
-        theme={readerSettings.theme}
+        onScrollToTop={scrollToTop}
+        onOpenDrawer={() => setIsDrawerOpen(true)}
       />
 
-      {/* Reader Settings Modal */}
-      <ReaderSettingsModal
+      {/* 4. Episode Table of Contents Drawer */}
+      <EpisodeDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        currentEpisodeId={currentEpisode.id}
+        onSelectEpisode={handleSelectEpisode}
+        theme={settings.theme}
+      />
+
+      {/* 5. Typography & Theme Settings Modal */}
+      <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        settings={readerSettings}
-        onUpdateSettings={handleUpdateSettings}
-        theme={readerSettings.theme}
+        settings={settings}
+        updateSetting={updateSetting}
+        resetSettings={resetSettings}
       />
     </div>
   );
